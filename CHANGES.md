@@ -1,5 +1,12 @@
 ## v6.3.0 (2026-08-20)
 
+- cohttp-eio: a response body chunk handed to the reader in several
+  `single_read` calls now continues from the position already delivered.
+  The second and later partial deliveries used to copy from offset 0 of the
+  chunk, so its first bytes were delivered again in place of the next ones,
+  which corrupted bodies read with a buffer smaller than the chunk (for
+  example an `Eio.Buf_read` over a streaming response). (@jeong-sik)
+
 - cohttp: `Cohttp.Path.resolve_local_file` no longer escapes the docroot when
   given percent-encoded traversal sequences such as `..%2f..%2f`. The URI path
   is percent-decoded exactly once before `.` and `..` segments are removed.
