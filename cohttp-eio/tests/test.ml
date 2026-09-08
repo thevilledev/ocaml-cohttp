@@ -2,6 +2,11 @@ let () =
   Logs.set_level ~all:true @@ Some Logs.Debug;
   Logs.set_reporter (Logs_fmt.reporter ())
 
+(* Every 8 bytes name their own offset, so a byte that arrives in the
+   wrong place says where it came from. *)
+let big_body =
+  String.concat "" (List.init 400 (fun i -> Printf.sprintf "%07d|" i))
+
 let handler _conn request body =
   match Http.Request.resource request with
   | "/" -> Cohttp_eio.Server.respond_string ~status:`OK ~body:"root" ()
@@ -13,6 +18,10 @@ let handler _conn request body =
       in
       Cohttp_eio.Server.respond ~status:`OK ~body ()
   | "/post" -> Cohttp_eio.Server.respond ~status:`OK ~body ()
+  | "/big" ->
+      Cohttp_eio.Server.respond ~status:`OK
+        ~body:(Eio.Flow.string_source big_body)
+        ()
   | _ -> Cohttp_eio.Server.respond_string ~status:`Not_found ~body:"" ()
 
 let () =
@@ -99,6 +108,29 @@ let () =
        0\r\n\
        \r\n"
       Eio.Buf_read.(of_flow ~max_size:max_int socket |> take_all)
+  (* The body flow hands one chunk over in as many [single_read] calls as
+     the reader's buffer needs. The second and later deliveries must continue
+     from where the previous one stopped, not from the start of the chunk.
+     The server writes [big_body] as one 3200-byte chunk (it fits the
+     writer's buffer), so a 100-byte reader takes it in 32 deliveries. *)
+  and partial_body_reads socket =
+    let client = Cohttp_eio.Client.make_generic (fun ~sw:_ _uri -> socket) in
+    let _response, body =
+      Cohttp_eio.Client.get ~sw client
+        (Uri.of_string "http://localhost:4242/big")
+    in
+    let out = Buffer.create (String.length big_body) in
+    let cs = Cstruct.create 100 in
+    let rec loop () =
+      match Eio.Flow.single_read body cs with
+      | n ->
+          Buffer.add_string out (Cstruct.to_string ~len:n cs);
+          loop ()
+      | exception End_of_file -> ()
+    in
+    let () = loop () in
+    Alcotest.(check ~here:[%here] string)
+      "body read 100 bytes at a time" big_body (Buffer.contents out)
   in
   Alcotest.run "cohttp-eio"
     [
@@ -108,5 +140,6 @@ let () =
           test_case "missing" missing;
           test_case "streaming response" streaming_response;
           test_case "request body" request_body;
+          test_case "partial body reads" partial_body_reads;
         ] );
     ]
