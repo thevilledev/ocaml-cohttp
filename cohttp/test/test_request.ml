@@ -350,6 +350,42 @@ let useless_null_content_length_header () =
     "null content-length header are not sent for bodyless methods" expected
     (Buffer.to_string output)
 
+let request_body_framing_is_independent_of_method () =
+  let wire =
+    "GET /first HTTP/1.1\r\ncontent-length: 4\r\n\r\ndata"
+    ^ "GET /second HTTP/1.1\r\n\r\n"
+  in
+  let input = String_io.open_in wire in
+  let first =
+    match StringRequest.read input with
+    | `Ok request -> request
+    | _ -> Alcotest.fail "first request did not parse"
+  in
+  Alcotest.(check bool)
+    "GET with Content-Length has a body" true
+    (Http.Request.has_body first = `Yes);
+  let reader = StringRequest.make_body_reader first input in
+  (match StringRequest.read_body_chunk reader with
+  | Transfer.Final_chunk "data" -> ()
+  | _ -> Alcotest.fail "GET body was not read at its declared length");
+  (match StringRequest.read input with
+  | `Ok request ->
+      Alcotest.(check string)
+        "next request starts after the GET body" "/second"
+        (Http.Request.resource request)
+  | _ -> Alcotest.fail "next request did not parse");
+  let head =
+    Http.Request.make ~meth:`HEAD
+      ~headers:(Header.of_list [ ("content-length", "4") ]) "/"
+  in
+  Alcotest.(check bool)
+    "HEAD with Content-Length has a body" true
+    (Http.Request.has_body head = `Yes);
+  let unframed = Http.Request.make ~meth:`POST "/" in
+  Alcotest.(check bool)
+    "request without length has no body" true
+    (Http.Request.has_body unframed = `No)
+
 let () =
   Alcotest.run "test_request"
     [
@@ -362,6 +398,9 @@ let () =
         ] );
       ( "Encoding",
         [
+          ( "request body framing ignores method",
+            `Quick,
+            request_body_framing_is_independent_of_method );
           ("from content-length header", `Quick, encoding_content_length_header);
           ( "from transfer-encoding header",
             `Quick,
